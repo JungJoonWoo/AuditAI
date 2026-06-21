@@ -14,6 +14,6 @@ repomix-output.md
 # codex 검증 프롬프트/출력(감사 로그는 docs/ 에 요약). 원하면 추적 제외.
 docs/.codex-prompt-*.md
 docs/.codex-out-*.txt
-
+.tools/codeql-win64.zip
 dist/
 build/
