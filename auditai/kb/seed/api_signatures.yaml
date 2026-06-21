@@ -1,0 +1,117 @@
+# 언어/라이브러리 API -> capability 연결 (청사진 §7 ApiSignature)
+api_signatures:
+  - id: python.subprocess.run
+    language: python
+    module: subprocess
+    qualified_name: subprocess.run
+    method_name: run
+    capability_id: command_execution
+    argument_roles: {"0": command, "shell": shell_mode}
+    dangerous_conditions:
+      - {arg: shell, equals: true}
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/command_injection.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.os.system
+    language: python
+    module: os
+    qualified_name: os.system
+    method_name: system
+    capability_id: command_execution
+    argument_roles: {"0": command}
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/command_injection.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.builtins.eval
+    language: python
+    module: builtins
+    qualified_name: eval
+    capability_id: code_execution
+    argument_roles: {"0": code}
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/code_execution.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.dbapi.cursor.execute
+    language: python
+    module: dbapi
+    qualified_name: cursor.execute
+    receiver_type: Cursor
+    method_name: execute
+    capability_id: sql_execution
+    argument_roles: {"0": query}
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sql_injection.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.pickle.loads
+    language: python
+    module: pickle
+    qualified_name: pickle.loads
+    method_name: loads
+    capability_id: unsafe_deserialization
+    argument_roles: {"0": data}
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.yaml.load
+    language: python
+    module: yaml
+    qualified_name: yaml.load
+    method_name: load
+    capability_id: unsafe_deserialization
+    argument_roles: {"0": stream, "Loader": loader}
+    dangerous_conditions:
+      - {arg: Loader, absent_or_unsafe: true}
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.requests.get
+    language: python
+    package: requests
+    module: requests
+    qualified_name: requests.get
+    method_name: get
+    capability_id: ssrf
+    argument_roles: {"0": url}
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/ssrf.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.builtins.open
+    language: python
+    module: builtins
+    qualified_name: open
+    capability_id: path_traversal
+    argument_roles: {"0": path}
+    confidence: low
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/path_traversal.py
+      expected_tp_fp: "tp>=1,fp<=1"

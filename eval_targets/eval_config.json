@@ -1,0 +1,10 @@
+{
+  "targets": [
+    {"name": "synthetic_python", "type": "plumbing", "purpose": "파이프라인 동작/회귀 검증 (T1/T3). bare-param taint 미탐지 — 효과입증 아님"},
+    {"name": "owasp_sourced", "type": "efficacy", "purpose": "효과입증: source-bearing 6 OWASP 클래스. Track A 6/6 탐지(실측)"},
+    {"name": "python_known_cves", "type": "known_cve", "purpose": "real-world 효과 입증 (T5)"},
+    {"name": "python_ghsa_patch_diffs", "type": "known_cve", "purpose": "patch diff 회귀/검증"},
+    {"name": "phoenix_smoke", "type": "smoke", "purpose": "대형 프로젝트 무결성 + framework source modeling. finding 없음 != 효과 없음"}
+  ],
+  "note": "G3 효과입증(efficacy) 게이트는 owasp_sourced 또는 python_known_cves/ghsa 가 있어야 PASS. phoenix(smoke)/synthetic_python(plumbing) 단독 금지 (codex Q2 R2-3)."
+}

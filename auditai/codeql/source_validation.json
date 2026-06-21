@@ -1,0 +1,19 @@
+{
+  "status": "run",
+  "codeql_version": "2.25.6",
+  "python_queries_pack": "codeql/python-queries@1.8.4",
+  "note": "Framework source-model validation matrix. Runtime source-of-truth for gate G2 (어느 프레임워크의 request entry point 를 CodeQL 이 source 로 모델링하는가). 프레임워크는 그 fixture 가 전부 detected 여야 validated. codeql_version 이 바뀌면 재검증 필요.",
+  "results": {
+    "fastapi_query_param":    {"framework": "fastapi",    "detected": true,  "findings": 1},
+    "fastapi_body_param":     {"framework": "fastapi",    "detected": true,  "findings": 1},
+    "starlette_query_params": {"framework": "starlette",  "detected": false, "findings": 0},
+    "starlette_json_body":    {"framework": "starlette",  "detected": false, "findings": 0},
+    "strawberry_resolver_arg":{"framework": "strawberry", "detected": false, "findings": 0},
+    "strawberry_input_object":{"framework": "strawberry", "detected": false, "findings": 0}
+  },
+  "summary": {
+    "fastapi": "pass (built-in source model)",
+    "starlette": "custom source model required (Request.query_params/json not modeled)",
+    "strawberry": "custom source model required (resolver arg / input object not modeled)"
+  }
+}

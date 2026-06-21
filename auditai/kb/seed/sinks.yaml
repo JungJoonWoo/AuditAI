@@ -1,0 +1,111 @@
+# 위험 sink (청사진 §7 SinkSpec). MVP taint_path 대상 CWE 집합.
+sinks:
+  - id: sink.subprocess.shell
+    api_signature_id: python.subprocess.run
+    sink_kind: command
+    dangerous_argument: "0"
+    required_conditions:
+      - {arg: shell, equals: true}
+    capability_id: command_execution
+    cwe: CWE-78
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/command_injection.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: sink.os.system
+    api_signature_id: python.os.system
+    sink_kind: command
+    dangerous_argument: "0"
+    capability_id: command_execution
+    cwe: CWE-78
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/command_injection.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: sink.eval
+    api_signature_id: python.builtins.eval
+    sink_kind: code
+    dangerous_argument: "0"
+    capability_id: code_execution
+    cwe: CWE-94
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/code_execution.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: sink.cursor.execute
+    api_signature_id: python.dbapi.cursor.execute
+    sink_kind: sql
+    dangerous_argument: "0"
+    required_conditions:
+      - {arg: "0", dynamic_string: true}
+    capability_id: sql_execution
+    cwe: CWE-89
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sql_injection.py
+      expected_tp_fp: "tp>=1,fp<=1"
+
+  - id: sink.pickle.loads
+    api_signature_id: python.pickle.loads
+    sink_kind: deserialization
+    dangerous_argument: "0"
+    capability_id: unsafe_deserialization
+    cwe: CWE-502
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: sink.yaml.load
+    api_signature_id: python.yaml.load
+    sink_kind: deserialization
+    dangerous_argument: "0"
+    required_conditions:
+      - {arg: Loader, absent_or_unsafe: true}
+    capability_id: unsafe_deserialization
+    cwe: CWE-502
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp<=1"
+
+  - id: sink.requests.url
+    api_signature_id: python.requests.get
+    sink_kind: network
+    dangerous_argument: "0"
+    capability_id: ssrf
+    cwe: CWE-918
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/ssrf.py
+      expected_tp_fp: "tp>=1,fp<=1"
+
+  - id: sink.open.path
+    api_signature_id: python.builtins.open
+    sink_kind: filesystem
+    dangerous_argument: "0"
+    capability_id: path_traversal
+    cwe: CWE-22
+    confidence: low
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/path_traversal.py
+      expected_tp_fp: "tp>=1,fp<=1"

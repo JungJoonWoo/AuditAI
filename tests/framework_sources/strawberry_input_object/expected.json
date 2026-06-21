@@ -1,0 +1,1 @@
+{"framework":"strawberry","source":"input_object_field","sink":"subprocess.check_output","cwe":"CWE-78","expected_source_count":1,"expected_sink_count":1,"expected_flow_exists":true,"note":"input object field가 source로 안 잡히면 custom source model 필요"}

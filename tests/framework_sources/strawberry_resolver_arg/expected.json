@@ -1,0 +1,1 @@
+{"framework":"strawberry","source":"resolver_argument","sink":"cursor.execute","cwe":"CWE-89","expected_source_count":1,"expected_sink_count":1,"expected_flow_exists":true,"note":"resolver arg가 source로 안 잡히면 custom source model 필요"}

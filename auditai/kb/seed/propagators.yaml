@@ -1,0 +1,31 @@
+# 값 전달 패턴 (청사진 §7 PropagatorSpec). wrapper/helper 에서 taint 끊김 방지.
+propagators:
+  - id: str.format
+    language: python
+    qualified_name_or_pattern: "str.format|f-string|%-format|str concat"
+    from: input_arg
+    to: return_value
+    propagation_kind: string_build
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/propagators.py
+      expected_tp_fp: "candidate"
+      engine_mappings:
+        codeql: "summaryModel: taint preserving string build"
+
+  - id: os.path.join
+    language: python
+    qualified_name_or_pattern: os.path.join
+    from: input_arg
+    to: return_value
+    propagation_kind: path_build
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/propagators.py
+      expected_tp_fp: "candidate"
+      engine_mappings:
+        codeql: "summaryModel: taint preserving path join"

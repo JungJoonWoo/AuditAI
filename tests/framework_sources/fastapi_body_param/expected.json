@@ -1,0 +1,1 @@
+{"framework":"fastapi","source":"body_param","sink":"eval","cwe":"CWE-94","expected_source_count":1,"expected_sink_count":1,"expected_flow_exists":true}

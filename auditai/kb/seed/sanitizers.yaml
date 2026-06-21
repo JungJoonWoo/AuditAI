@@ -1,0 +1,58 @@
+# 방어/검증 함수 (청사진 §7 SanitizerSpec).
+# 중요: 이름만 보고 FP 제거 금지 — candidate 표시용. 실제 충분성은 S3 LLM 판정.
+sanitizers:
+  - id: shlex.quote
+    language: python
+    qualified_name_or_pattern: shlex.quote
+    sanitizer_kind: shell_escape
+    applies_to_capability: command_execution
+    strength: partial
+    limitations: "shell=True 와 결합 시에도 인자 분리 안 하면 불완전"
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sanitizers.py
+      expected_tp_fp: "candidate"
+
+  - id: parameterized_query
+    language: python
+    qualified_name_or_pattern: "cursor.execute(sql, params)"
+    sanitizer_kind: parameterization
+    applies_to_capability: sql_execution
+    strength: strong
+    limitations: "identifier(테이블/컬럼명) 치환에는 무효"
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sanitizers.py
+      expected_tp_fp: "candidate"
+
+  - id: yaml.safe_load
+    language: python
+    qualified_name_or_pattern: yaml.safe_load
+    sanitizer_kind: safe_api
+    applies_to_capability: unsafe_deserialization
+    strength: strong
+    limitations: "safe_load 만; load(Loader=SafeLoader) 변형 인지 필요"
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sanitizers.py
+      expected_tp_fp: "candidate"
+
+  - id: validate_prefix
+    language: python
+    qualified_name_or_pattern: "validate_*|sanitize_*"
+    sanitizer_kind: name_heuristic
+    applies_to_capability: path_traversal
+    strength: candidate
+    limitations: "이름만으로 충분성 판단 불가 — LLM 의미판정 필수"
+    confidence: low
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sanitizers.py
+      expected_tp_fp: "candidate"

@@ -1,0 +1,7 @@
+name: auditai/framework-sources
+version: 0.0.1
+library: true
+dependencies:
+  codeql/python-all: "*"
+dataExtensions:
+  - "*.model.yml"

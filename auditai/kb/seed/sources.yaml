@@ -1,0 +1,71 @@
+# 외부 입력 source (청사진 §7 SourceSpec). v1 Python 경계 source 최소셋 (01 C2).
+# 주의: CodeQL 기본 제공 여부는 "검증 매트릭스"로 테스트로 잠근다(codex R2-4) — 가정 금지.
+sources:
+  - id: flask.request.args
+    language: python
+    framework: flask
+    qualified_name_or_pattern: flask.request.args
+    source_kind: http_request
+    arg_or_return_role: return
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sources.py
+      expected_tp_fp: "tp>=1,fp=0"
+      engine_mappings:
+        codeql: "sourceModel: flask RemoteFlowSource (검증 필요)"
+
+  - id: flask.request.json
+    language: python
+    framework: flask
+    qualified_name_or_pattern: flask.request.get_json
+    source_kind: http_request
+    arg_or_return_role: return
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sources.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: fastapi.request.param
+    language: python
+    framework: fastapi
+    qualified_name_or_pattern: "fastapi endpoint parameter"
+    source_kind: http_request
+    arg_or_return_role: parameter
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sources.py
+      expected_tp_fp: "tp>=1,fp<=1"
+      engine_mappings:
+        prompt_context: "FastAPI 파라미터가 사용자 통제인지 (CodeQL 기본모델 미보장 — 검증)"
+
+  - id: os.environ
+    language: python
+    qualified_name_or_pattern: os.environ
+    source_kind: environment
+    arg_or_return_role: return
+    confidence: low
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sources.py
+      expected_tp_fp: "tp>=0"
+
+  - id: llm.agent_output
+    language: python
+    qualified_name_or_pattern: "llm/agent tool result"
+    source_kind: llm_output
+    arg_or_return_role: return
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sources.py
+      expected_tp_fp: "tp>=0"
+      engine_mappings:
+        prompt_context: "LLM-authored agent 코드에서 LLM 출력을 tainted source 로 취급"

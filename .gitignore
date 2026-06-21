@@ -1,0 +1,19 @@
+# AuditAI
+.venv/
+.tools/                # CodeQL CLI (365MB), 다운로드 바이너리
+runs/                  # 파이프라인 산출물 runs/<run_id>/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+*.sarif                # CodeQL SARIF 산출물
+.codeql-db/
+**/codeql_db/
+uv.lock
+# repomix 덤프(대용량, git 히스토리 없음 — 분석엔 full clone 사용)
+repomix-output.md
+# codex 검증 프롬프트/출력(감사 로그는 docs/ 에 요약). 원하면 추적 제외.
+docs/.codex-prompt-*.md
+docs/.codex-out-*.txt
+
+dist/
+build/

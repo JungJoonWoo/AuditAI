@@ -1,0 +1,28 @@
+[project]
+name = "auditai"
+version = "0.1.0"
+description = "AI(Claude)-authored code 우선 SAST triage — AuditAI MVP (Slice 1)"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+auditai = "auditai.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["auditai"]

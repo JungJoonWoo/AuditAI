@@ -1,0 +1,10 @@
+extensions:
+  - addsTo:
+      pack: codeql/python-all
+      extensible: sourceModel
+    data:
+      - ["starlette.requests", "Member[Request].Instance.Member[query_params]", "remote"]
+      - ["starlette.requests", "Member[Request].Instance.Member[path_params]", "remote"]
+      - ["starlette.requests", "Member[Request].Instance.Member[headers]", "remote"]
+      - ["starlette.requests", "Member[Request].Instance.Member[json].ReturnValue", "remote"]
+      - ["starlette.requests", "Member[Request].Instance.Member[body].ReturnValue", "remote"]

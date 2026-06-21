@@ -1,0 +1,1 @@
+{"framework": "starlette", "source": "request.query_params", "sink": "open", "cwe": "CWE-22", "expected_source_count": 1, "expected_sink_count": 1, "expected_flow_exists": true, "note": "Starlette Request.* 가 source 로 안 잡힘 → custom routing source model 필요(V1.5)"}

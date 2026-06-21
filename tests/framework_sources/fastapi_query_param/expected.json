@@ -1,0 +1,1 @@
+{"framework":"fastapi","source":"query_param","sink":"subprocess.run(shell=True)","cwe":"CWE-78","expected_source_count":1,"expected_sink_count":1,"expected_flow_exists":true}
