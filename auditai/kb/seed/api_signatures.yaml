@@ -115,3 +115,235 @@ api_signatures:
       version: "0.1.0"
       test_fixture: eval_targets/synthetic_python/path_traversal.py
       expected_tp_fp: "tp>=1,fp<=1"
+
+  # --- LangGraph PoC chain (Check Point): deserialization -> RCE (CWE-502) ---
+  - id: python.pickle.load
+    language: python
+    module: pickle
+    qualified_name: pickle.load
+    method_name: load
+    capability_id: unsafe_deserialization
+    argument_roles: {"0": file}
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  # codex b819cwlvl: msgpack/ormsgpack 는 recall 지향(기본 옵션은 RCE 아님) → confidence=low,
+  # FP 허용을 expected_tp_fp 에 정직 표기. 등록 유지하되 high-confidence taint 주장하지 않음.
+  - id: python.ormsgpack.unpackb
+    language: python
+    package: ormsgpack
+    module: ormsgpack
+    qualified_name: ormsgpack.unpackb
+    method_name: unpackb
+    capability_id: unsafe_deserialization
+    argument_roles: {"0": data}
+    confidence: low
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp<=1  # recall-oriented(high FP); 의미판정은 S3"
+
+  - id: python.msgpack.unpackb
+    language: python
+    package: msgpack
+    module: msgpack
+    qualified_name: msgpack.unpackb
+    method_name: unpackb
+    capability_id: unsafe_deserialization
+    argument_roles: {"0": data}
+    confidence: low
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp<=1  # recall-oriented(high FP); 의미판정은 S3"
+
+  - id: python.msgpack.loads
+    language: python
+    package: msgpack
+    module: msgpack
+    qualified_name: msgpack.loads
+    method_name: loads
+    capability_id: unsafe_deserialization
+    argument_roles: {"0": data}
+    confidence: low
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp<=1  # recall-oriented(high FP); 의미판정은 S3"
+
+  - id: python.marshal.loads
+    language: python
+    module: marshal
+    qualified_name: marshal.loads
+    method_name: loads
+    capability_id: unsafe_deserialization
+    argument_roles: {"0": data}
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.marshal.load
+    language: python
+    module: marshal
+    qualified_name: marshal.load
+    method_name: load
+    capability_id: unsafe_deserialization
+    argument_roles: {"0": file}
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.dill.loads
+    language: python
+    package: dill
+    module: dill
+    qualified_name: dill.loads
+    method_name: loads
+    capability_id: unsafe_deserialization
+    argument_roles: {"0": data}
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.dill.load
+    language: python
+    package: dill
+    module: dill
+    qualified_name: dill.load
+    method_name: load
+    capability_id: unsafe_deserialization
+    argument_roles: {"0": file}
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.jsonpickle.decode
+    language: python
+    package: jsonpickle
+    module: jsonpickle
+    qualified_name: jsonpickle.decode
+    method_name: decode
+    capability_id: unsafe_deserialization
+    argument_roles: {"0": string}
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  # --- LangGraph PoC chain (Check Point): SQL execution (CWE-89) ---
+  - id: python.sqlite3.cursor.execute
+    language: python
+    package: sqlite3
+    module: sqlite3
+    qualified_name: sqlite3.Cursor.execute
+    receiver_type: Cursor
+    method_name: execute
+    capability_id: sql_execution
+    argument_roles: {"0": query}
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sqlite_injection.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.sqlite3.cursor.executescript
+    language: python
+    package: sqlite3
+    module: sqlite3
+    qualified_name: sqlite3.Cursor.executescript
+    receiver_type: Cursor
+    method_name: executescript
+    capability_id: sql_execution
+    argument_roles: {"0": sql_script}
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sqlite_injection.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.sqlite3.connection.execute
+    language: python
+    package: sqlite3
+    module: sqlite3
+    qualified_name: sqlite3.Connection.execute
+    receiver_type: Connection
+    method_name: execute
+    capability_id: sql_execution
+    argument_roles: {"0": query}
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sqlite_injection.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.sqlite3.connection.executescript
+    language: python
+    package: sqlite3
+    module: sqlite3
+    qualified_name: sqlite3.Connection.executescript
+    receiver_type: Connection
+    method_name: executescript
+    capability_id: sql_execution
+    argument_roles: {"0": sql_script}
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sqlite_injection.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.aiosqlite.cursor.execute
+    language: python
+    package: aiosqlite
+    module: aiosqlite
+    qualified_name: aiosqlite.Cursor.execute
+    receiver_type: Cursor
+    method_name: execute
+    capability_id: sql_execution
+    argument_roles: {"0": query}
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sqlite_injection.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: python.aiosqlite.connection.execute
+    language: python
+    package: aiosqlite
+    module: aiosqlite
+    qualified_name: aiosqlite.Connection.execute
+    receiver_type: Connection
+    method_name: execute
+    capability_id: sql_execution
+    argument_roles: {"0": query}
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sqlite_injection.py
+      expected_tp_fp: "tp>=1,fp=0"

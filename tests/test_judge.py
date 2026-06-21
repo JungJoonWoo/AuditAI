@@ -168,6 +168,37 @@ def test_judge_tasks_engine_error_is_failed():
     assert o.judgement is None
 
 
+def test_judge_tasks_close_error_is_failed_not_judged():
+    """transcript 삭제 실패(close)는 보안상 FAILED — 판정이 성공해도 강등(§4.3)."""
+    eng = FakeEngine(_valid_json(), close_error=RuntimeError("transcript delete failed"))
+    run = judge_tasks([_task()], eng)
+    o = run.outcomes[0]
+    assert o.state == JudgeRunState.FAILED and o.judgement is None
+    assert "session close failed" in o.skip_reason
+    assert run.judged_count == 0 and run.judgement_skipped_count == 1
+
+
+def test_judge_tasks_close_failure_takes_priority_over_parse_failure():
+    """§4.3 #8(codex bj94zik1d-8): parse 실패와 close(transcript 삭제) 실패가 동시 발생하면
+    **보안상 close 실패가 우선** 기록된다(parse 실패에 가려지지 않음)."""
+    # 첫 응답·repair 응답 모두 garbage(parse 2회 실패) + close 도 raise(transcript 삭제 실패).
+    eng = FakeEngine(["garbage", "still garbage"],
+                     close_error=RuntimeError("transcript delete failed"))
+    run = judge_tasks([_task()], eng)
+    o = run.outcomes[0]
+    assert o.state == JudgeRunState.FAILED and o.judgement is None
+    assert "session close failed" in o.skip_reason  # parse_failed 가 아니라 close 가 우선
+    assert "parse_failed" not in o.skip_reason
+
+
+def test_judge_tasks_opens_one_session_per_candidate():
+    """§4.2: 후보당 새 세션 1개, 각각 close."""
+    eng = FakeEngine(_valid_json())
+    judge_tasks([_task("a"), _task("b")], eng)
+    assert len(eng.sessions) == 2
+    assert all(s.closed for s in eng.sessions)
+
+
 def test_judge_tasks_no_engine_all_skipped():
     run = judge_tasks([_task("a"), _task("b")], None)
     assert run.judged_count == 0 and run.judgement_skipped_count == 2

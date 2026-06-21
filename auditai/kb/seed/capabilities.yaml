@@ -38,7 +38,7 @@ capabilities:
     cwe: CWE-89
     description: 동적으로 조립된 외부 입력이 SQL 실행에 도달
     severity_hint: high
-    examples: ["cursor.execute(f-string)"]
+    examples: ["cursor.execute(f-string)", "sqlite3.Connection.executescript", "aiosqlite execute"]
     terminal_impact: data exfiltration / tampering
     meta:
       owner: auditai-seed
@@ -84,7 +84,7 @@ capabilities:
     cwe: CWE-502
     description: 외부 입력이 안전하지 않은 역직렬화에 도달
     severity_hint: high
-    examples: ["pickle.loads", "yaml.load"]
+    examples: ["pickle.loads", "yaml.load", "ormsgpack.unpackb", "marshal.loads", "dill.loads", "jsonpickle.decode"]
     terminal_impact: RCE
     meta:
       owner: auditai-seed

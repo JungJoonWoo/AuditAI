@@ -24,8 +24,18 @@ from .contracts import (
 )
 
 
+class JudgeSession(Protocol):
+    """판정 대화 세션(§4.2). 첫 send=새 세션, 이후 send=resume. judge.py 가 세션 수명으로
+    new(후보별)/resume(후보내 repair) 정책을 강제한다 — 엔진/세션은 정책을 결정하지 않는다."""
+
+    def send(self, prompt: str, *, timeout: float) -> str: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> "JudgeSession": ...
+    def __exit__(self, *exc) -> None: ...
+
+
 class JudgeEngine(Protocol):
-    """판정 엔진 추상화. 구체구현은 프롬프트를 받아 LLM stdout(원문)을 반환한다.
+    """판정 엔진 추상화. `start_session()` 으로 세션을 열고, 그 세션의 `send()` 로만 프롬프트를 보낸다.
 
     실 엔진은 프롬프트를 **stdin** 으로 전달하고 shell=False·cwd=temp·env scrub·안전플래그를
     강제한다(docs/06 §4). 여기 protocol 은 그 계약의 표면만 정의한다.
@@ -34,7 +44,31 @@ class JudgeEngine(Protocol):
     name: str
     model: str
 
-    def run(self, prompt: str, *, timeout: float) -> str: ...
+    def start_session(self) -> JudgeSession: ...
+
+
+class _FakeSession:
+    """FakeEngine 세션. send 순서대로 응답 소진, close 시 정리(transcript 삭제 시뮬레이션 포함)."""
+
+    def __init__(self, engine: "FakeEngine"):
+        self._engine = engine
+        self.closed = False
+
+    def send(self, prompt: str, *, timeout: float) -> str:
+        if self.closed:
+            raise RuntimeError("send() on a closed fake session")
+        return self._engine._next(prompt)
+
+    def close(self) -> None:
+        self.closed = True
+        if self._engine.close_error is not None:
+            raise self._engine.close_error  # transcript 삭제 실패 시뮬레이션
+
+    def __enter__(self) -> "_FakeSession":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
 
 class FakeEngine:
@@ -42,17 +76,22 @@ class FakeEngine:
 
     `responses`: str(항상 동일) | list[str|Exception](순서대로; Exception 은 raise; 소진 시 마지막
     반복) | Callable[[str], str](프롬프트→응답). Exception 응답으로 CLI 실패를 시뮬레이션한다.
+    세션 인터페이스(start_session/send/close)를 지원한다(§4.2). `sessions` 로 생성된 세션을,
+    `calls` 로 전체 프롬프트를 관찰한다. `close_error` 설정 시 close 가 raise(transcript 삭제 실패).
     """
 
     name = "fake"
 
-    def __init__(self, responses: str | list | Callable[[str], str], model: str = "fake-model"):
+    def __init__(self, responses: str | list | Callable[[str], str], model: str = "fake-model",
+                 close_error: BaseException | None = None):
         self._responses = responses
         self._i = 0
         self.model = model
         self.calls: list[str] = []
+        self.sessions: list[_FakeSession] = []
+        self.close_error = close_error
 
-    def run(self, prompt: str, *, timeout: float) -> str:
+    def _next(self, prompt: str) -> str:
         self.calls.append(prompt)
         r = self._responses
         if callable(r):
@@ -65,6 +104,11 @@ class FakeEngine:
         if isinstance(val, BaseException):
             raise val
         return val
+
+    def start_session(self) -> _FakeSession:
+        s = _FakeSession(self)
+        self.sessions.append(s)
+        return s
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -117,26 +161,60 @@ _REPAIR_SUFFIX = (
 
 
 def _judge_one(task: JudgeTask, engine: JudgeEngine, *, timeout: float) -> JudgeOutcome:
-    """task 1개 판정. parse 실패 시 1회 repair 재요청, 그래도 실패면 FAILED. CLI 예외도 FAILED.
+    """task 1개(=1 후보) 판정. **새 세션 1개**로 첫 send(new), parse 실패 시 같은 세션 resume 으로
+    1회 repair 재요청, 그래도 실패면 FAILED. CLI/세션/transcript-삭제 예외도 FAILED.
 
-    **어떤 실패도 false_positive 로 떨어뜨리지 않는다**(fail-closed).
+    §4.2: new(후보별)/resume(후보내 repair) 결정은 **judge.py 가 세션 수명으로** 한다 — `with
+    engine.start_session()` 으로 후보당 1 세션을 열고, repair 는 같은 세션의 send(=resume)로 보낸다.
+    엔진은 send 횟수로 new/resume 을 자동 결정할 뿐 정책을 결정하지 않는다.
+
+    **어떤 실패도 false_positive 로 떨어뜨리지 않는다**(fail-closed). transcript 삭제 실패(close)도
+    보안상 FAILED 로 회계한다(§4.3).
     """
     model = getattr(engine, "model", "")
+
+    def _fail(reason: str) -> JudgeOutcome:
+        return JudgeOutcome(
+            candidate_id=task.candidate_id, state=JudgeRunState.FAILED,
+            skip_reason=reason, engine=engine.name, model=model,
+        )
+
+    try:
+        session = engine.start_session()  # 후보별 새 세션
+    except Exception as e:
+        return _fail(f"engine_error: session start failed: {type(e).__name__}: {e}")
+
+    out = None
+    parse_err: str | None = None
+    engine_err: str | None = None
+    close_err: str | None = None
     try:
         try:
-            out = extract_judge_output(engine.run(task.prompt, timeout=timeout))
-        except JudgeParseError:
-            out = extract_judge_output(engine.run(task.prompt + _REPAIR_SUFFIX, timeout=timeout))
-    except JudgeParseError as e:
-        return JudgeOutcome(
-            candidate_id=task.candidate_id, state=JudgeRunState.FAILED,
-            skip_reason=f"parse_failed: {e}", engine=engine.name, model=model,
-        )
-    except Exception as e:  # CLI/timeout/비정상 종료 — 전송했으나 실패
-        return JudgeOutcome(
-            candidate_id=task.candidate_id, state=JudgeRunState.FAILED,
-            skip_reason=f"engine_error: {type(e).__name__}: {e}", engine=engine.name, model=model,
-        )
+            try:
+                out = extract_judge_output(session.send(task.prompt, timeout=timeout))  # new
+            except JudgeParseError:
+                # 같은 세션 resume 으로 repair(모델이 자기 직전 출력을 이어서 교정).
+                out = extract_judge_output(
+                    session.send(task.prompt + _REPAIR_SUFFIX, timeout=timeout)
+                )
+        except JudgeParseError as e:
+            parse_err = f"parse_failed: {e}"
+        except Exception as e:  # CLI/timeout/비정상 종료/세션 send 실패 — 전송했으나 실패
+            engine_err = f"engine_error: {type(e).__name__}: {e}"
+    finally:
+        try:
+            session.close()  # temp cwd/config 삭제 + transcript 삭제(실패는 보안 FAILED)
+        except Exception as e:
+            # §4.3 #8(codex bj94zik1d-8): close(=transcript 삭제) 실패는 **보안 우선** 으로 기록하며
+            # 동시 발생한 parse 실패에 가려지지 않는다(우선순위: close > engine > parse).
+            close_err = f"engine_error: session close failed: {type(e).__name__}: {e}"
+
+    if close_err is not None:
+        return _fail(close_err)
+    if engine_err is not None:
+        return _fail(engine_err)
+    if parse_err is not None:
+        return _fail(parse_err)
     return JudgeOutcome(
         candidate_id=task.candidate_id, state=JudgeRunState.JUDGED,
         judgement=assemble_semantic_judgement(task, out), engine=engine.name, model=model,

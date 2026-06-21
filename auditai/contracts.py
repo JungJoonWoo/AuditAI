@@ -627,11 +627,10 @@ class JudgeRun(StrictModel):
 class CapabilityProbeResult(StrictModel):
     """엔진 안전성 probe 결과(codex s3plan2 #1).
 
-    `usable` 의 필수 게이트: stdin 전달 가능 + 요구 안전플래그가 `--help` 에 실재. behavioral_probe
-    (temp cwd 에서 도구/파일접근이 실제 차단되는지 실측)는 **추가 hardening** — 돌렸다면 반드시 통과해야
-    하고(behavioral_probe_run=True → passed 필수), 안 돌렸으면 문서화된 안전플래그(`--tools ""`/`-s
-    read-only`/`--approval-mode plan`)를 신뢰한다. (모든 안전플래그가 실재 확인됐는데 안 돌렸다고 전엔진을
-    degrade 시키면 S3 가 영영 안 돈다 — 실용/보안 균형. codex CODE QA 검토 대상.)
+    `usable` 의 필수 게이트(codex bj94zik1d-3, fall-open 제거): stdin 전달 가능 + 요구 안전플래그가
+    `--help` 에 실재 + **behavioral_probe 가 실제로 실행되어 통과**해야 한다. `--help` 플래그 실재는
+    동작 보장이 아니므로(엔진이 그냥 거부만 해도 통과하던 fall-open), behavioral probe(temp cwd 에서
+    write side-effect/transcript 누출 실측) 미실행/미통과 = **검증 안 된 격리 → unusable**.
     """
 
     engine: str
@@ -645,9 +644,10 @@ class CapabilityProbeResult(StrictModel):
 
     @property
     def usable(self) -> bool:
-        if not (self.supports_stdin and self.safety_flags_present):
-            return False
-        return self.behavioral_probe_passed if self.behavioral_probe_run else True
+        return (
+            self.supports_stdin and self.safety_flags_present
+            and self.behavioral_probe_run and self.behavioral_probe_passed
+        )
 
 
 # --------------------------------------------------------------------------- #

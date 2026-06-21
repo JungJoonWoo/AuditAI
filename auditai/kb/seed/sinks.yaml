@@ -109,3 +109,217 @@ sinks:
       version: "0.1.0"
       test_fixture: eval_targets/synthetic_python/path_traversal.py
       expected_tp_fp: "tp>=1,fp<=1"
+
+  # --- LangGraph PoC chain (Check Point): deserialization -> RCE (CWE-502) ---
+  # pickle.loads 는 위 sink.pickle.loads 가 이미 등록. 아래는 동족 P0 sink 보강.
+  - id: sink.pickle.load
+    api_signature_id: python.pickle.load
+    sink_kind: deserialization
+    dangerous_argument: "0"
+    capability_id: unsafe_deserialization
+    cwe: CWE-502
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  # codex b819cwlvl: msgpack/ormsgpack 는 recall 지향(high FP). 기본 옵션 unpackb 는 pickle 류
+  # 임의코드실행이 아니라(raw/custom hook/strict_map_key 조건부) → high-confidence taint 주장 금지.
+  # static_pattern_risk 성격으로 confidence=low + FP 허용을 meta(expected_tp_fp)에 정직 표기. 등록은 유지.
+  - id: sink.ormsgpack.unpackb
+    api_signature_id: python.ormsgpack.unpackb
+    sink_kind: deserialization
+    dangerous_argument: "0"
+    capability_id: unsafe_deserialization
+    cwe: CWE-502
+    confidence: low  # recall 지향(static_pattern_risk) — 기본 unpackb 는 RCE 아님, FP 허용
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp<=1  # recall-oriented(high FP); 의미판정은 S3"
+
+  - id: sink.msgpack.unpackb
+    api_signature_id: python.msgpack.unpackb
+    sink_kind: deserialization
+    dangerous_argument: "0"
+    capability_id: unsafe_deserialization
+    cwe: CWE-502
+    confidence: low  # recall 지향(static_pattern_risk) — 기본 unpackb 는 RCE 아님, FP 허용
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp<=1  # recall-oriented(high FP); 의미판정은 S3"
+
+  - id: sink.msgpack.loads
+    api_signature_id: python.msgpack.loads
+    sink_kind: deserialization
+    dangerous_argument: "0"
+    capability_id: unsafe_deserialization
+    cwe: CWE-502
+    confidence: low  # recall 지향(static_pattern_risk) — 기본 loads 는 RCE 아님, FP 허용
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp<=1  # recall-oriented(high FP); 의미판정은 S3"
+
+  - id: sink.marshal.loads
+    api_signature_id: python.marshal.loads
+    sink_kind: deserialization
+    dangerous_argument: "0"
+    capability_id: unsafe_deserialization
+    cwe: CWE-502
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: sink.marshal.load
+    api_signature_id: python.marshal.load
+    sink_kind: deserialization
+    dangerous_argument: "0"
+    capability_id: unsafe_deserialization
+    cwe: CWE-502
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: sink.dill.loads
+    api_signature_id: python.dill.loads
+    sink_kind: deserialization
+    dangerous_argument: "0"
+    capability_id: unsafe_deserialization
+    cwe: CWE-502
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: sink.dill.load
+    api_signature_id: python.dill.load
+    sink_kind: deserialization
+    dangerous_argument: "0"
+    capability_id: unsafe_deserialization
+    cwe: CWE-502
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  - id: sink.jsonpickle.decode
+    api_signature_id: python.jsonpickle.decode
+    sink_kind: deserialization
+    dangerous_argument: "0"
+    capability_id: unsafe_deserialization
+    cwe: CWE-502
+    confidence: high
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/unsafe_deserialization.py
+      expected_tp_fp: "tp>=1,fp=0"
+
+  # --- LangGraph PoC chain (Check Point): SQL execution (CWE-89) ---
+  # 위 sink.cursor.execute 는 generic DBAPI cursor. 아래는 sqlite3/aiosqlite 명시 P0 sink.
+  - id: sink.sqlite3.cursor.execute
+    api_signature_id: python.sqlite3.cursor.execute
+    sink_kind: sql
+    dangerous_argument: "0"
+    required_conditions:
+      - {arg: "0", dynamic_string: true}
+    capability_id: sql_execution
+    cwe: CWE-89
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sqlite_injection.py
+      expected_tp_fp: "tp>=1,fp<=1"
+
+  - id: sink.sqlite3.cursor.executescript
+    api_signature_id: python.sqlite3.cursor.executescript
+    sink_kind: sql
+    dangerous_argument: "0"
+    required_conditions:
+      - {arg: "0", dynamic_string: true}
+    capability_id: sql_execution
+    cwe: CWE-89
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sqlite_injection.py
+      expected_tp_fp: "tp>=1,fp<=1"
+
+  - id: sink.sqlite3.connection.execute
+    api_signature_id: python.sqlite3.connection.execute
+    sink_kind: sql
+    dangerous_argument: "0"
+    required_conditions:
+      - {arg: "0", dynamic_string: true}
+    capability_id: sql_execution
+    cwe: CWE-89
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sqlite_injection.py
+      expected_tp_fp: "tp>=1,fp<=1"
+
+  - id: sink.sqlite3.connection.executescript
+    api_signature_id: python.sqlite3.connection.executescript
+    sink_kind: sql
+    dangerous_argument: "0"
+    required_conditions:
+      - {arg: "0", dynamic_string: true}
+    capability_id: sql_execution
+    cwe: CWE-89
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sqlite_injection.py
+      expected_tp_fp: "tp>=1,fp<=1"
+
+  - id: sink.aiosqlite.cursor.execute
+    api_signature_id: python.aiosqlite.cursor.execute
+    sink_kind: sql
+    dangerous_argument: "0"
+    required_conditions:
+      - {arg: "0", dynamic_string: true}
+    capability_id: sql_execution
+    cwe: CWE-89
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sqlite_injection.py
+      expected_tp_fp: "tp>=1,fp<=1"
+
+  - id: sink.aiosqlite.connection.execute
+    api_signature_id: python.aiosqlite.connection.execute
+    sink_kind: sql
+    dangerous_argument: "0"
+    required_conditions:
+      - {arg: "0", dynamic_string: true}
+    capability_id: sql_execution
+    cwe: CWE-89
+    confidence: medium
+    meta:
+      owner: auditai-seed
+      version: "0.1.0"
+      test_fixture: eval_targets/synthetic_python/sqlite_injection.py
+      expected_tp_fp: "tp>=1,fp<=1"

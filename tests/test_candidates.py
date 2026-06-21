@@ -282,3 +282,185 @@ def test_edge_duck_execute_route_is_taint_candidate(monkeypatch):
     scan = _scan_src(monkeypatch, src)
     ex = [c for c in scan.candidates if c.sink_spec_id == "sink.cursor.execute"]
     assert ex and any(c.candidate_type == CandidateType.TAINT_PATH for c in ex)
+
+
+# --- codex S1 r5 (상): 선행변수 dynamic-string 추적 (execute(Name)) -------------- #
+def test_dynamic_assigned_names_unit():
+    """_dynamic_assigned_names: 함수 안 동적대입 Name 들을 모은다(f-string/concat/+=/annot/튜플)."""
+    from auditai.candidates import _dynamic_assigned_names
+
+    fn = ast.parse(
+        "def h(x, y):\n"
+        "    a = f'sel {x}'\n"        # f-string
+        "    b = 'p' + x\n"           # concat
+        "    c = 'lit'\n"             # literal-only → 제외
+        "    d = 'fmt %s' % x\n"      # % format
+        "    e += f'{x}'\n"           # aug
+        "    g: str = f'{y}'\n"       # annotated
+        "    p, q = f'{x}', 'lit'\n"  # 튜플 언패킹(p 만 동적)
+    ).body[0]
+    got = _dynamic_assigned_names(fn)
+    assert {"a", "b", "d", "e", "g", "p"} <= got
+    assert "c" not in got and "q" not in got
+
+
+def test_is_dynamic_string_name_with_tracking():
+    """_is_dynamic_string(Name, dynamic_names): 추적 집합에 있으면 동적, 없으면 비동적(FP 차단)."""
+    name = ast.parse("q", mode="eval").body
+    assert _is_dynamic_string(name, frozenset({"q"}))
+    assert not _is_dynamic_string(name, frozenset())
+    assert not _is_dynamic_string(name)  # dynamic_names 없으면 Name 은 비동적(하위호환)
+
+
+def test_edge_execute_preceding_dynamic_var_kept(monkeypatch):
+    """codex S1 r5(상): `q = f\"..{x}\"; cur.execute(q)` (인자가 Name) — 선행변수 SQLi FN 차단.
+    route 안이라 TAINT 후보로 유지(recall-first; 안전성은 S2/S3)."""
+    src = ("@app.get('/x')\n"
+           "def h(cur, x):\n"
+           "    q = f\"SELECT * FROM u WHERE n='{x}'\"\n"
+           "    return cur.execute(q)\n")
+    scan = _scan_src(monkeypatch, src)
+    ex = [c for c in scan.candidates if c.sink_spec_id == "sink.cursor.execute"]
+    assert ex and any(c.candidate_type == CandidateType.TAINT_PATH for c in ex)
+
+
+def test_edge_execute_preceding_concat_var_kept(monkeypatch):
+    """선행변수가 concat(`q = "..." + x`)이어도 execute(q) 후보 유지(FN 차단)."""
+    src = ("@app.get('/x')\n"
+           "def h(cur, name):\n"
+           "    q = \"SELECT * FROM u WHERE n='\" + name + \"'\"\n"
+           "    return cur.execute(q)\n")
+    scan = _scan_src(monkeypatch, src)
+    assert any(c.sink_spec_id == "sink.cursor.execute" for c in scan.candidates)
+
+
+def test_edge_execute_preceding_literal_var_not_candidate(monkeypatch):
+    """선행변수가 literal-only(`q = 'SELECT 1'`)면 execute(q)는 dynamic_string 조건 불충족 → 후보 아님
+    (recall-first 가 모든 Name 을 무조건 동적으로 보지는 않음 — 명백한 정적은 제외)."""
+    src = ("@app.get('/x')\n"
+           "def h(cur):\n"
+           "    q = 'SELECT 1'\n"
+           "    return cur.execute(q)\n")
+    scan = _scan_src(monkeypatch, src)
+    assert not any(c.sink_spec_id == "sink.cursor.execute" for c in scan.candidates)
+
+
+def test_edge_execute_unrelated_var_not_candidate(monkeypatch):
+    """동적대입이 **다른 이름**(p)일 때 execute(q)는 q 가 추적집합에 없어 후보 아님(이름 매칭 정확성)."""
+    src = ("@app.get('/x')\n"
+           "def h(cur, x):\n"
+           "    p = f\"{x}\"\n"
+           "    q = 'SELECT 1'\n"
+           "    return cur.execute(q)\n")
+    scan = _scan_src(monkeypatch, src)
+    assert not any(c.sink_spec_id == "sink.cursor.execute" for c in scan.candidates)
+
+
+def test_edge_execute_dynamic_var_reverse_order_kept(monkeypatch):
+    """recall-first: assignment 가 call **뒤**에 와도(statement order 미추적) 후보 유지(reverse-order FN 차단)."""
+    src = ("def h(cur, x):\n"
+           "    cur.execute(q)\n"
+           "    q = f\"SELECT {x}\"\n")
+    scan = _scan_src(monkeypatch, src)
+    assert any(c.sink_spec_id == "sink.cursor.execute" for c in scan.candidates)
+
+
+def test_edge_sqlite_connection_execute_preceding_var_kept(monkeypatch):
+    """확장 KB sink(sqlite3 connection.execute)도 선행변수 dynamic-string 으로 후보 유지."""
+    src = ("import sqlite3\n@app.get('/x')\n"
+           "def h(conn, x):\n"
+           "    q = f\"SELECT {x}\"\n"
+           "    return conn.execute(q)\n")
+    scan = _scan_src(monkeypatch, src)
+    assert any(c.capability_id == "sql_execution" for c in scan.candidates)
+
+
+# --- codex b819cwlvl: 실 fixture 회수 검증(토큰 환상 대체) -------------------------- #
+# 공유 `.execute(` 토큰 존재가 아니라 scan_candidates() 가 실제로 후보를 회수하는지,
+# 한 call span 이 중복 안 되는지, safe TN span 이 후보에서 빠지는지를 잠근다.
+def _scan_fixture(monkeypatch, rel: str):
+    """실 eval_targets fixture 를 git-free 로 scan(파일 전체 added/AI 로 강제)."""
+    from auditai.contracts import AILineAttribution
+    from auditai.scope import AddedLineAttribution, DiffLine, DiffScope, FileDiff
+
+    src = (Path(__file__).resolve().parent.parent / rel).read_text(encoding="utf-8")
+    lines = src.splitlines()
+    fd = FileDiff(file="m.py", added_lines=[
+        DiffLine(change="added", new_lineno=i + 1, text=l) for i, l in enumerate(lines)])
+    scope = DiffScope(repo="r", base_sha="b", head_sha="h", merge_base="mb",
+                      pr_commit_count=1, files=[fd])
+    monkeypatch.setattr("auditai.candidates._git", lambda repo, *a, **k: src)
+    ai = set(range(1, len(lines) + 1))
+    attribs = [AILineAttribution(file="m.py", line_range=(ln, ln), commit="h",
+                                 attribution_state=AttributionState.CONFIRMED_AI,
+                                 ai_confidence=0.95, label_source="blame") for ln in ai]
+    added = AddedLineAttribution(ai_lines={"m.py": ai}, attributions=attribs, completed=True)
+    return scan_candidates("r", scope, added, load_kb()), src
+
+
+def _spans(cands):
+    return [(c.sink_span.start_line, c.sink_span.start_col,
+             c.sink_span.end_line, c.sink_span.end_col) for c in cands]
+
+
+def test_fixture_sqlite_injection_recovery(monkeypatch):
+    """sqlite_injection.py: 6개 위험 call span 각각 후보 1개(중복 0), safe parameterized 는 후보 아님."""
+    scan, _ = _scan_fixture(monkeypatch, "eval_targets/synthetic_python/sqlite_injection.py")
+    # 6개 동적 execute/executescript call span(line 4,6,8,10,12,14). line 16 은 parameterized(TN).
+    danger_lines = {4, 6, 8, 10, 12, 14}
+    cand_lines = sorted(c.sink_span.start_line for c in scan.candidates)
+    assert cand_lines == sorted(danger_lines), cand_lines
+    assert len(scan.candidates) == 6  # 한 call span = 후보 1개(dedup; 5중복 인플레이션 차단)
+    # 한 call span 이 절대 2개 이상으로 분열되지 않음(span 유일성)
+    assert len(_spans(scan.candidates)) == len(set(_spans(scan.candidates)))
+    # 전부 sql_execution / CWE-89
+    assert all(c.capability_id == "sql_execution" for c in scan.candidates)
+    # NEGATIVE: parameterized safe query(line 16) span 은 후보/인벤토리에 없음
+    assert 16 not in cand_lines
+    assert 16 not in {i.line for i in scan.candidate_inventory}
+
+
+def test_fixture_executescript_each_recovered_once(monkeypatch):
+    """executescript sink(cursor/connection, line 6·10)이 각각 정확히 1번 회수(KB 장식 아님)."""
+    scan, _ = _scan_fixture(monkeypatch, "eval_targets/synthetic_python/sqlite_injection.py")
+    script_cands = [c for c in scan.candidates if "executescript" in c.sink_spec_id]
+    # line 6(cursor.executescript), line 10(connection.executescript) → 각 1개
+    assert {c.sink_span.start_line for c in script_cands} == {6, 10}
+    assert len(script_cands) == 2  # 각 span 1개(중복 아님)
+
+
+def test_fixture_unsafe_deserialization_recovery(monkeypatch):
+    """unsafe_deserialization.py: 위험 sink 각각 후보 1개, yaml.safe_load(line 6)는 후보 아님(TN)."""
+    scan, _ = _scan_fixture(monkeypatch, "eval_targets/synthetic_python/unsafe_deserialization.py")
+    by_sink = {}
+    for c in scan.candidates:
+        by_sink.setdefault(c.sink_spec_id, []).append(c)
+    # 각 위험 sink 정확히 1회 회수(per-sink-id 기대 수)
+    expected_once = {
+        "sink.pickle.loads", "sink.yaml.load", "sink.pickle.load",
+        "sink.ormsgpack.unpackb", "sink.msgpack.unpackb", "sink.msgpack.loads",
+        "sink.marshal.loads", "sink.marshal.load", "sink.dill.loads",
+        "sink.dill.load", "sink.jsonpickle.decode",
+    }
+    for sid in expected_once:
+        assert len(by_sink.get(sid, [])) == 1, (sid, by_sink.get(sid))
+    assert len(scan.candidates) == len(expected_once)  # 한 call span = 후보 1
+    # 한 call span 분열 없음
+    assert len(_spans(scan.candidates)) == len(set(_spans(scan.candidates)))
+    # NEGATIVE: yaml.safe_load(line 6) span 은 후보/인벤토리에 없음
+    cand_lines = {c.sink_span.start_line for c in scan.candidates}
+    assert 6 not in cand_lines
+    assert 6 not in {i.line for i in scan.candidate_inventory}
+
+
+def test_fixture_no_double_candidate_single_span(monkeypatch):
+    """codex b819cwlvl 핵심: 한 `conn.execute(...)` call span 이 generic dbapi + sqlite3 + aiosqlite
+    여러 sink 로 분열돼 다중 후보가 되면 안 된다(span 당 정확히 1 후보)."""
+    src = ("import sqlite3\n@app.get('/x')\n"
+           "def h(conn, x):\n"
+           "    return conn.execute(f\"SELECT {x}\")\n")
+    scan = _scan_src(monkeypatch, src)
+    execs = [c for c in scan.candidates if c.capability_id == "sql_execution"]
+    assert len(execs) == 1, [c.sink_spec_id for c in execs]  # 1개(5중복 아님)
+    # duck-typed(receiver 변수) → 라이브러리 단정 불가 → generic dbapi 대표
+    assert execs[0].sink_spec_id == "sink.cursor.execute"

@@ -44,7 +44,9 @@ _ROUTE_RECEIVERS = ("app", "router", "api", "blueprint", "bp", "application")
 _REQUEST_NAMES = ("request", "req", "flask_request")
 # duck-typed method 매칭 allowlist (codex S1 r2 상): receiver 가 본질적으로 인스턴스 변수인 것만.
 # `run`/`get`/`load`/`system` 같은 generic verb 는 제외 → exact/import-resolved 호출만(FP 차단).
-_DUCK_METHODS = ("execute",)  # DB cursor.execute / conn.cursor().execute (provenance 불명 → static/low)
+# codex b819cwlvl: KB 에 등록된 신규 method-name sink(sqlite3/aiosqlite executescript)도 duck 으로
+# 회수해야 'KB 장식'이 안 됨 → execute + executescript 둘 다 allowlist(둘 다 required_conditions 있음).
+_DUCK_METHODS = ("execute", "executescript")  # DB cursor/conn .execute|.executescript (provenance 불명)
 _SAFE_YAML_LOADERS_CANON = (
     "yaml.SafeLoader", "yaml.CSafeLoader", "yaml.BaseLoader", "yaml.CBaseLoader",
     "yaml.loader.SafeLoader", "yaml.loader.CSafeLoader",
@@ -60,9 +62,14 @@ class ScanResult:
     unknown_sink_candidate_count: int = 0
     fn_note: str = (
         "S1=known-KB AST seed scanner(청사진 §S1 'recall-first, 1차 FP 제거 금지'). FP 는 의도적으로 "
-        "S2(CodeQL evidence)/S3(LLM)/사람 검토로 미룬다. 미구현(post-MVP): Semgrep/LLM-miner/unknown-surface; "
-        "정밀 name-resolution(lexical scope·statement order·For/With-as/NamedExpr/destructuring 재바인딩); "
-        "변수추적 dynamic-string; KB 미등록 sink·bare-param. 안전성(예: yaml SafeLoader, sanitizer)은 S3 가 판정."
+        "S2(CodeQL evidence)/S3(LLM)/사람 검토로 미룬다. "
+        "구현(codex S1 r5 상): 선행변수 dynamic-string 추적 — enclosing 함수 안 `q=f\"..{x}\"; execute(q)` "
+        "처럼 동적문자열을 대입받은 Name 인자도 dynamic_string 조건 충족으로 보고 후보 유지(recall-first; "
+        "statement order/재바인딩/scope·branch 는 미추적이라 함수 내 1회 동적대입이면 동적으로 봄 — over-keep, "
+        "안전성은 S2/S3 가 판정). 미구현(post-MVP): Semgrep/LLM-miner/unknown-surface; 정밀 name-resolution"
+        "(lexical scope·statement order·For/With-as/NamedExpr/destructuring 재바인딩); 변수의 cross-function/"
+        "전역 dynamic-string 전파; yaml module-attr rebinding; KB 미등록 sink·bare-param. 안전성(예: yaml "
+        "SafeLoader, sanitizer)은 S3 가 판정."
     )
 
 
@@ -143,8 +150,14 @@ def _is_literal_str(node: ast.expr) -> bool:
     return False
 
 
-def _is_dynamic_string(node: ast.expr) -> bool:
-    """동적(주입 위험) 문자열인가. literal-only 는 제외(codex S1 r3). 변수추적은 미구현(fn_note)."""
+def _is_dynamic_string(node: ast.expr, dynamic_names: frozenset[str] | None = None) -> bool:
+    """동적(주입 위험) 문자열인가. literal-only 는 제외(codex S1 r3).
+
+    codex S1 r5(상): `dynamic_names` 가 주어지면 **선행변수 SQLi FN** 을 막는다 — 직접 식이 아니라
+    `q = f"..{x}"; cur.execute(q)` 처럼 인자가 동적문자열을 담은 `Name` 일 때(함수 내 assignment 추적
+    결과)도 동적으로 본다(recall-first: 후보 유지, 안전성은 S2/S3 가 판정). 그 외 변수추적은 미구현(fn_note)."""
+    if dynamic_names and isinstance(node, ast.Name) and node.id in dynamic_names:
+        return True  # 선행 assignment 가 동적문자열(intra-function tracking)
     if isinstance(node, ast.JoinedStr):  # f-string: 비-literal 보간이 하나라도 있으면 동적
         return not _is_literal_str(node)
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
@@ -155,6 +168,52 @@ def _is_dynamic_string(node: ast.expr) -> bool:
             all(_is_literal_str(k.value) for k in node.keywords)
         return not (recv_lit and args_lit)
     return False
+
+
+def _dynamic_assigned_names(fn: ast.AST | None) -> frozenset[str]:
+    """enclosing 함수 안에서 **동적문자열을 대입받은 local Name** 들 (codex S1 r5 상: 선행변수 SQLi FN 차단).
+
+    `q = f"..{x}"`, `q = "a"+x`, `q += f"{x}"`, `q: str = "..%s"%x`, 다중타깃(`a=b=f"{x}"`)·튜플
+    언패킹(`a,b = f"{x}", y`) 모두 포착. recall-first 라 statement order/재바인딩/scope 는 추적하지 않는다
+    (함수 안 어디서든 한 번이라도 동적 대입되면 그 이름은 동적으로 본다) — 제거하면 reverse-order FN.
+    부정확(다른 동명 변수에 안전 대입)으로 인한 FP 는 S2(CodeQL evidence)/S3 가 거른다(청사진 §S1)."""
+    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return frozenset()
+    names: set[str] = set()
+
+    def _all_targets(tgt: ast.expr) -> list[str]:
+        if isinstance(tgt, ast.Name):
+            return [tgt.id]
+        if isinstance(tgt, (ast.Tuple, ast.List)):
+            out: list[str] = []
+            for e in tgt.elts:
+                out.extend(_all_targets(e))
+            return out
+        return []
+
+    def _bind(tgt: ast.expr, val: ast.expr | None) -> None:
+        """tgt = val 의 동적 binding 수집. 병렬 튜플(`a,b = x, y`)은 원소별로 매칭해
+        `q` 가 literal 이면 제외(과대 keep 줄임). 길이 불일치/별표 등은 보수적으로 전 타깃 keep."""
+        if (isinstance(tgt, (ast.Tuple, ast.List))
+                and isinstance(val, (ast.Tuple, ast.List))
+                and len(tgt.elts) == len(val.elts)
+                and not any(isinstance(e, ast.Starred) for e in tgt.elts)):
+            for te, ve in zip(tgt.elts, val.elts):
+                _bind(te, ve)
+            return
+        if val is not None and _is_dynamic_string(val):
+            names.update(_all_targets(tgt))
+
+    for sub in ast.walk(fn):
+        if isinstance(sub, ast.Assign):  # a = b = <expr> (다중타깃)
+            for t in sub.targets:
+                _bind(t, sub.value)
+        elif isinstance(sub, ast.AugAssign):  # q += f"{x}"
+            if _is_dynamic_string(sub.value):
+                names.update(_all_targets(sub.target))
+        elif isinstance(sub, ast.AnnAssign):  # q: str = f"{x}"
+            _bind(sub.target, sub.value)
+    return frozenset(names)
 
 
 def _safe_yaml_loader(node: ast.expr, imports: dict[str, str]) -> bool:
@@ -180,8 +239,14 @@ def _arg_node(call: ast.Call, key: str) -> tuple[ast.expr | None, bool]:
     return None, False
 
 
-def _conditions_met(call: ast.Call, conditions: list[dict], imports: dict[str, str]) -> bool:
-    """SinkSpec.required_conditions 전부 충족? (codex S1: absent_or_unsafe + positional + canonical)."""
+def _conditions_met(
+    call: ast.Call, conditions: list[dict], imports: dict[str, str],
+    dynamic_names: frozenset[str] | None = None,
+) -> bool:
+    """SinkSpec.required_conditions 전부 충족? (codex S1: absent_or_unsafe + positional + canonical).
+
+    codex S1 r5(상): `dynamic_names`(enclosing 함수에서 동적문자열 대입된 Name)는 dynamic_string 평가에
+    넘겨 `q=f"..{x}"; execute(q)` 선행변수 SQLi 후보를 유지한다(recall-first)."""
     for cond in conditions:
         key = str(cond.get("arg", ""))
         node, present = _arg_node(call, key)
@@ -189,7 +254,7 @@ def _conditions_met(call: ast.Call, conditions: list[dict], imports: dict[str, s
             if not present or not (isinstance(node, ast.Constant) and node.value == cond["equals"]):
                 return False
         if cond.get("dynamic_string"):
-            if not present or not _is_dynamic_string(node):
+            if not present or not _is_dynamic_string(node, dynamic_names):
                 return False
         if cond.get("absent_or_unsafe"):
             # codex S1 r2 상: Loader 를 keyword 와 positional(예: yaml.load(x, Loader)) 둘 다 확인.
@@ -225,6 +290,28 @@ def _has_request_ref(node: ast.AST) -> bool:
         if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name) and sub.value.id in _REQUEST_NAMES:
             return True
     return False
+
+
+def _is_generic_dbapi(sig) -> bool:
+    """generic DBAPI cursor sink(sqlite3/aiosqlite 아님) — module=='dbapi'."""
+    return getattr(sig, "module", None) == "dbapi"
+
+
+def _sink_more_specific(new: tuple, cur: tuple, duck: bool) -> bool:
+    """같은 call span + capability 의 후보 중 대표 선택 우선순위(codex b819cwlvl, recall-first).
+
+    duck-typed(receiver 변수) 매칭은 어떤 DB 라이브러리인지 단정 못 한다 → **generic dbapi sink**
+    (`cursor.execute`)를 대표로(라이브러리 특정 주장은 근거 없음, 가장 정직). generic 이 없으면(예:
+    executescript) sink.id 사전순으로 결정론적 선택. exact 매칭(by_qual)은 보통 qualified name 당 sink
+    1개라 충돌이 없으나 동일하게 결정론적으로 처리한다. 어느 쪽이든 coverage 는 줄지 않고(같은 span+cap
+    은 본래 1 후보가 맞음) 중복만 제거된다."""
+    new_sink, new_sig = new
+    cur_sink, cur_sig = cur
+    if duck:
+        new_generic, cur_generic = _is_generic_dbapi(new_sig), _is_generic_dbapi(cur_sig)
+        if new_generic != cur_generic:
+            return new_generic  # generic dbapi 가 대표
+    return new_sink.id < cur_sink.id  # 결정론적 tie-break
 
 
 def _build_index(kb: SecurityKB):
@@ -327,18 +414,31 @@ class _CallScanner(ast.NodeVisitor):
 
         lineno = node.lineno  # call 시작(=sink_span/S2 overlap 기준)
         col = node.col_offset + 1
+        end_line = getattr(node, "end_lineno", None) or lineno
         end_col = (getattr(node, "end_col_offset", None) + 1
                    if getattr(node, "end_col_offset", None) is not None else None)
-        for sink, _sig in cands:
-            if not _conditions_met(node, sink.required_conditions, self.imports):
-                continue
-            key = f"{self.fd.file}:{lineno}:{col}:{sink.id}"  # call identity (same-line dedup by col)
+        # enclosing 함수 1회 산출 — source_nearby + 선행변수 dynamic-string 추적 공용(codex S1 r5 상).
+        fn = next((n for n in reversed(self.funcstack)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
+        dynamic_names = _dynamic_assigned_names(fn)
+        # codex b819cwlvl: 한 call span 이 여러 sink(generic dbapi + sqlite3/aiosqlite)에 매칭돼도
+        # **후보 1개**여야 한다(중복 인플레이션 금지). 조건충족 sink 를 capability 별로 묶어 대표 1개만
+        # 선택(specific-wins)하고, dedup 키에서 sink.id 를 뺀다(=같은 call span+capability → 후보 1).
+        qualifying = [(s, sg) for s, sg in cands
+                      if _conditions_met(node, s.required_conditions, self.imports, dynamic_names)]
+        by_cap: dict[str, tuple] = {}
+        for sink, sig in qualifying:
+            chosen = by_cap.get(sink.capability_id)
+            if chosen is None or _sink_more_specific((sink, sig), chosen, duck):
+                by_cap[sink.capability_id] = (sink, sig)
+        for sink, _sig in by_cap.values():
+            # dedup 키: (file,start_line,start_col,end_line,end_col,capability) — sink.id 제외(중복 차단).
+            key = f"{self.fd.file}:{lineno}:{col}:{end_line}:{end_col}:{sink.capability_id}"
             if key in self.seen:
                 continue
             self.seen.add(key)
             span = LocationSpan(  # sink_span = call 전체(S2 exact-overlap 기준)
-                file=self.fd.file, start_line=lineno,
-                end_line=getattr(node, "end_lineno", None) or lineno,
+                file=self.fd.file, start_line=lineno, end_line=end_line,
                 start_col=col, end_col=end_col,
             )
             snippet = self.clines[anchor - 1].strip() if 1 <= anchor <= len(self.clines) else ""
@@ -359,8 +459,6 @@ class _CallScanner(ast.NodeVisitor):
                      if any(r.attribution_state == AttributionState.CONFIRMED_AI for r in refs)
                      else AttributionState.PROBABLE_AI)
             # source_nearby = route handler 또는 request 참조(codex S1 중: param 만으론 taint 안 함)
-            fn = next((n for n in reversed(self.funcstack)
-                       if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
             source_nearby = bool(fn and (_route_handler(fn) or _has_request_ref(fn)))
             # codex S1 r4: recall-first — duck-matched(.execute)도 route 면 TAINT 후보로(강등 철회).
             # provenance 없는 비-SQL execute(template.execute 등)는 S2 CodeQL evidence 가 거른다.
