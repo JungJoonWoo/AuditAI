@@ -1,0 +1,71 @@
+
+
+# --------------------------------------------------------------------------- #
+# §6.1 stage 단독 실행/resume
+# --------------------------------------------------------------------------- #
+def _run_stage(args) -> int:
+    """단일 stage 를 앞 아티팩트(들)로 실행해 --out 에 영속화(§6.1 resumability).
+
+    각 stage 는 자신이 선언한 입력 아티팩트만 로드한다(s2.5=s1+s2, s4=s3+s1+s2). 입력 아티팩트의
+    status==error 면 load_stage_artifact 가 StageArtifactError → fail-closed(다음 단계 진행 금지).
+    """
+    from . import pipeline
+    from .artifacts import (
+        S0Artifact, S1Artifact, S2Artifact, S25Artifact, S3Artifact,
+        StageArtifact, StageArtifactError, load_stage_artifact, write_stage_artifact,
+    )
+    from .judge_engines import build_judge_engine
+    from .kb import load_kb
+
+    inputs = [Path(p) for p in args.inputs]
+
+    def _load(cls, idx: int):
+        if idx >= len(inputs):
+            raise StageArtifactError(
+                f"stage {args.stage} requires more --in artifacts (need {cls.__name__})"
+            )
+        return load_stage_artifact(inputs[idx], cls)
+
+    try:
+        if args.stage == "s0":
+            if not (args.repo and args.base and args.head):
+                raise ValueError("stage s0 requires --repo/--base/--head")
+            art: StageArtifact = pipeline.stage_s0(args.repo, args.base, args.head)
+        elif args.stage == "s1":
+            if not args.repo:
+                raise ValueError("stage s1 requires --repo")
+            s0 = _load(S0Artifact, 0)
+            art = pipeline.stage_s1(s0, args.repo, load_kb())
+        elif args.stage == "s2":
+            if not args.repo:
+                raise ValueError("stage s2 requires --repo")
+            s1 = _load(S1Artifact, 0)
+            db_dir = str(Path(args.out).parent / "codeql_db")
+            art = pipeline.stage_s2(s1, args.repo, run_codeql=args.run_codeql, db_dir=db_dir)
+        elif args.stage == "s2.5":
+            s1 = _load(S1Artifact, 0)
+            s2 = _load(S2Artifact, 1)
+            art = pipeline.stage_s2_5(s1, s2)
+        elif args.stage == "s3":
+            s25 = _load(S25Artifact, 0)
+            engine, _probe = build_judge_engine(args.judge_engine, repo_root=args.repo or ".")
+            art = pipeline.stage_s3(s25, engine)
+        elif args.stage == "s4":
+            s3 = _load(S3Artifact, 0)
+            s1 = _load(S1Artifact, 1)
+            s2 = _load(S2Artifact, 2)
+            art = pipeline.stage_s4(s3, s1, s2)
+        else:  # argparse choices 가 막지만 방어적으로
+            raise ValueError(f"unknown stage {args.stage!r}")
+        write_stage_artifact(Path(args.out), art)
+    except (StageArtifactError, ValueError, FileExistsError, OSError, GitError) as e:
+        print(f"auditai: error: {e}", file=sys.stderr)
+        return 2
+    print(f"stage={args.stage} status={art.status.value} -> {args.out}")
+    if art.status.value == "error":
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

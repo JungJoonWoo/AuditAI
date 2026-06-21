@@ -191,3 +191,58 @@ def test_cli_run_codeql_flag_parses():
         "--target-type", "synthetic", "--runs-dir", "d", "--run-codeql",
     ])
     assert args.run_codeql is True
+
+
+def test_cli_judge_engine_flag_parses():
+    args = build_parser().parse_args([
+        "scan", "--repo", "r", "--base", "b", "--head", "h", "--run-id", "x",
+        "--target-type", "synthetic", "--runs-dir", "d", "--judge-engine", "codex",
+    ])
+    assert args.judge_engine == "codex"
+
+
+# --- §6.1 stage resume CLI ------------------------------------------------- #
+def test_cli_stage_s0_s1_resume(diff_repo: Path, tmp_path: Path):
+    """stage CLI: s0 단독 실행 → 그 아티팩트로 s1 재개(--in). ok stage 는 exit 0."""
+    s0_out = tmp_path / "s0.json"
+    code = main(["stage", "s0", "--repo", str(diff_repo), "--base", "HEAD~1", "--head", "HEAD",
+                 "--out", str(s0_out)])
+    assert code == 0 and s0_out.exists()
+    s1_out = tmp_path / "s1.json"
+    code = main(["stage", "s1", "--repo", str(diff_repo), "--in", str(s0_out), "--out", str(s1_out)])
+    assert code == 0 and s1_out.exists()
+
+
+def test_cli_stage_partial_exit3(diff_repo: Path, tmp_path: Path):
+    """codex QA #3: s2(no codeql) → partial → exit 3(성공 0 아님, 부분 실패 가시화)."""
+    s0 = tmp_path / "s0.json"; main(["stage", "s0", "--repo", str(diff_repo),
+                                     "--base", "HEAD~1", "--head", "HEAD", "--out", str(s0)])
+    s1 = tmp_path / "s1.json"; main(["stage", "s1", "--repo", str(diff_repo),
+                                     "--in", str(s0), "--out", str(s1)])
+    s2 = tmp_path / "s2.json"
+    code = main(["stage", "s2", "--repo", str(diff_repo), "--in", str(s1), "--out", str(s2)])
+    assert code == 3  # partial (CodeQL 미요청)
+
+
+def test_cli_stage_multi_input_s2_5(diff_repo: Path, tmp_path: Path):
+    """stage s2.5 는 다중 입력(s1+s2)을 순서대로 로드한다(§6.1 multi-input resume)."""
+    s0 = tmp_path / "s0.json"; main(["stage", "s0", "--repo", str(diff_repo),
+                                     "--base", "HEAD~1", "--head", "HEAD", "--out", str(s0)])
+    s1 = tmp_path / "s1.json"; main(["stage", "s1", "--repo", str(diff_repo),
+                                     "--in", str(s0), "--out", str(s1)])
+    s2 = tmp_path / "s2.json"; main(["stage", "s2", "--repo", str(diff_repo),
+                                     "--in", str(s1), "--out", str(s2)])
+    s25 = tmp_path / "s25.json"
+    code = main(["stage", "s2.5", "--in", str(s1), "--in", str(s2), "--out", str(s25)])
+    assert code in (0, 3) and s25.exists()  # ok 또는 partial(상류 s2 partial 전파)
+
+
+def test_cli_stage_missing_input_is_error(tmp_path: Path):
+    """stage s2.5 에 입력 부족(--in 1개만) → fail-closed exit 2."""
+    s1 = tmp_path / "s1.json"
+    s1.write_text(json.dumps({
+        "schema_version": "2", "stage": "S1", "status": "ok", "candidates": [],
+        "candidate_inventory": [], "unknown_sink_count": 0, "fn_note": "",
+    }), encoding="utf-8")
+    code = main(["stage", "s2.5", "--in", str(s1), "--out", str(tmp_path / "s25.json")])
+    assert code == 2  # s2 입력 누락 → StageArtifactError

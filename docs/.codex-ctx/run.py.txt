@@ -340,6 +340,21 @@ def run_pipeline(
 
     # --- stage 산출 집계(verdict-C: 단계 아티팩트가 단일 진실원) ---
     s1, s2, s3, s4 = arts.get("s1"), arts.get("s2"), arts.get("s3"), arts.get("s4")
+    # candidate_inventory = S1 inventory + (S2 미배선이라 evidence 전인) TAINT 후보 표면화.
+    candidate_inventory: list[CandidateInventoryItem] = list(s1.candidate_inventory) if s1 else []
+    if s1 is not None:
+        for c in s1.candidates:
+            if c.candidate_type.value != "taint_path":
+                continue
+            candidate_inventory.append(CandidateInventoryItem(
+                candidate_id=c.candidate_id, candidate_type=c.candidate_type, file=c.file,
+                line=c.sink_span.start_line if c.sink_span else 0, sink_span=c.sink_span,
+                capability_id=c.capability_id, sink_spec_id=c.sink_spec_id,
+                reason=f"taint_path candidate (S2 evidence: {'present' if _has_evidence(s2, c.candidate_id) else 'absent'})",
+                ai_attribution_state=(c.ai_attribution_refs[0].attribution_state
+                                      if c.ai_attribution_refs else AttributionState.PROBABLE_AI),
+            ))
+
     findings = list(s4.findings) if s4 is not None else []
     s2_completed = bool(s2 is not None and s2.s2_completed)
     s3_completed = bool(s3 is not None and s3.s3_completed)
@@ -350,28 +365,6 @@ def run_pipeline(
     s0_attribution_completed = bool(s0.completed)
     unknown_sink_count = s1.unknown_sink_count if s1 is not None else 0
 
-    # candidate_inventory(status 영향) = S1 inventory(static_pattern/UNKNOWN sink) + **미해소** TAINT 후보.
-    # codex verdict-C QA #1(CRITICAL): S2 가 완료(s2_completed=True)면 각 TAINT 후보의 운명은 S2.5→S3→S4
-    #   가 결정한다 — judged finding 은 S4(권위)로, false_positive/무evidence 는 정직히 드롭. 이때 후보를
-    #   inventory 로 **다시** 표면화하면 false_positive judged 후보가 candidate_inventory>0 으로 status 를
-    #   FINDINGS_PRESENT 로 오염(verdict-C "S4 findings 권위" 위반). → s2 미완(파이프라인이 후보 운명을
-    #   확정 못 함)일 때만 'pending taint candidate' 로 surface(clean 오독 방지). s2 완료면 S4 만 권위.
-    candidate_inventory: list[CandidateInventoryItem] = list(s1.candidate_inventory) if s1 else []
-    if s1 is not None and not s2_completed:
-        for c in s1.candidates:
-            if c.candidate_type.value != "taint_path":
-                continue
-            candidate_inventory.append(CandidateInventoryItem(
-                candidate_id=c.candidate_id, candidate_type=c.candidate_type, file=c.file,
-                line=c.sink_span.start_line if c.sink_span else 0, sink_span=c.sink_span,
-                capability_id=c.capability_id, sink_spec_id=c.sink_spec_id,
-                reason="taint_path candidate pending S2 evidence (S2 not completed)",
-                ai_attribution_state=(c.ai_attribution_refs[0].attribution_state
-                                      if c.ai_attribution_refs else AttributionState.PROBABLE_AI),
-            ))
-
-    # codex verdict-C QA #2(CRITICAL): downstream stage 크래시(stage_error.json, s0 는 OK)면 결과 전체
-    # 신뢰 불가 → ANALYSIS_ERROR 최상위 강제(Track B inventory/finding 있어도, track_a_required 무관).
     status, rel = resolve_run_status(
         target_type=target_type, gate_results=gates,
         s2_completed=s2_completed, finding_count=len(findings),
@@ -384,7 +377,6 @@ def run_pipeline(
         judged_count=judged_count,
         judgement_skipped_count=judgement_skipped_count,
         candidate_inventory_count=len(candidate_inventory),
-        analysis_incomplete=stage_error,
     )
     report = RunReport(
         run_id=run_id, target_type=target_type, run_status=status, reliability=rel,
@@ -397,7 +389,6 @@ def run_pipeline(
         judged_count=judged_count,
         judgement_skipped_count=judgement_skipped_count,
         candidate_inventory=candidate_inventory,
-        analysis_incomplete=stage_error,
     )
 
     # --- RunReport 계열 artifacts (stage 아티팩트는 run_stages 가 이미 영속화) ---
@@ -446,3 +437,10 @@ def run_pipeline(
     if s4 is not None:
         _write(out_dir / "findings_report.md", render_findings_md(s4))
     return report
+
+
+def _has_evidence(s2, candidate_id: str) -> bool:
+    """S2 아티팩트에 해당 후보의 flow evidence 가 있는가(candidate_inventory reason 표기용)."""
+    if s2 is None:
+        return False
+    return any(e.candidate_id == candidate_id for e in s2.evidence)

@@ -577,12 +577,19 @@ class JudgeRun(StrictModel):
 
     codex s3core2: `model_dump()` 는 **진단 artifact 용(output-only)** 이다. computed count 는 입력
     필드가 아니므로 `model_validate(model_dump())` round-trip 은 지원하지 않는다(StrictModel extra=forbid).
-    향후 run.py 배선(S3 wiring) 시에는 `to_report_counts()` 만 쓸 것(round-trip 의존 금지). 현재는 미배선.
+    배선은 `to_report_counts()` 만 쓴다(round-trip 의존 금지).
+
+    codex pipeline-qa2(#6 의미 통일): S3 의 두 축을 분리한다 —
+    - `s3_reached`: judge **단계가 도달·실행됐는가**(engine None 이라도 전원 SKIPPED 로 회계됐으면 True).
+      과거 `s3_completed` 가 가졌던 '단계 실행' 의미.
+    - `s3_completed`(computed): **eligible 전원이 실제 판정됐는가**(=judgement_skipped_count==0).
+      이게 resolver 의 SEMANTIC_JUDGE_NOT_RUN 판단에 쓰이는 권위 값. 손으로 set 하지 않고 derive 한다
+      (미판정이 있는데 completed=True 로 위장 못 함). 단계 아티팩트 측 권위 플래그는 `S3Artifact.s3_completed`.
     """
 
     outcomes: list[JudgeOutcome] = Field(default_factory=list)
     eligible_candidate_ids: list[str] = Field(default_factory=list)
-    s3_completed: bool = True
+    s3_reached: bool = True  # judge 단계 도달·실행 여부(미실행이면 False)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -599,6 +606,13 @@ class JudgeRun(StrictModel):
     def judgement_skipped_count(self) -> int:
         # SKIPPED + FAILED 둘 다 '미판정'(judged 아님).
         return sum(1 for o in self.outcomes if o.state != JudgeRunState.JUDGED)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def s3_completed(self) -> bool:
+        """eligible 전원 판정 완료(=미판정 0). 단계 도달(`s3_reached`)과 다른 축 — 도달했어도
+        skip/failed 가 있으면 completed=False(SEMANTIC_JUDGE_NOT_RUN 으로 직결, NO_VULN 오독 금지)."""
+        return self.s3_reached and self.judgement_skipped_count == 0
 
     @model_validator(mode="after")
     def _accounting(self) -> JudgeRun:
@@ -1003,6 +1017,7 @@ class RunReport(StrictModel):
     judged_count: int = Field(default=0, ge=0)  # S3 가 유효 Verdict 산출한 수(JudgeRunState.JUDGED)
     judgement_skipped_count: int = Field(default=0, ge=0)  # eligible 인데 skipped/failed(미판정) 수
     candidate_inventory: list[CandidateInventoryItem] = Field(default_factory=list)
+    analysis_incomplete: bool = False  # stage 시퀀서 크래시(stage_error) → ANALYSIS_ERROR 강제(codex verdict-C QA #2)
 
     @model_validator(mode="after")
     def _judge_count_invariants(self) -> RunReport:
@@ -1051,6 +1066,8 @@ class RunReport(StrictModel):
                     "OUT_OF_MVP_SCOPE must have s0_attribution_completed=False and "
                     "s3_completed=False (no analysis ran)"
                 )
+            if self.analysis_incomplete:
+                raise ValueError("OUT_OF_MVP_SCOPE must have analysis_incomplete=False (no analysis ran)")
             return self
 
         expected_status, expected_rel = resolve_run_status(
@@ -1067,6 +1084,7 @@ class RunReport(StrictModel):
             judged_count=self.judged_count,
             judgement_skipped_count=self.judgement_skipped_count,
             candidate_inventory_count=len(self.candidate_inventory),
+            analysis_incomplete=self.analysis_incomplete,
         )
         if (self.run_status, self.reliability) != (expected_status, expected_rel):
             raise ValueError(
@@ -1091,6 +1109,7 @@ def resolve_run_status(
     judged_count: int = 0,
     judgement_skipped_count: int = 0,
     candidate_inventory_count: int = 0,
+    analysis_incomplete: bool = False,
 ) -> tuple[RunStatus, Reliability]:
     """게이트 severity precedence 로 최종 RunStatus + reliability 결정 (계획 §0.2).
 
@@ -1104,6 +1123,11 @@ def resolve_run_status(
     track_a_required (codex Q2 R2-2): True(기본, full-scan)면 S2 미완료는 ANALYSIS_ERROR.
     False(Track-B-only 모드, taint 미요구)면 S2 미완료여도 Track B inventory 가 있으면 FINDINGS_PRESENT
     (단 unreliable — taint 미실행). inventory 도 0 이면 여전히 ANALYSIS_ERROR(taint 없이 clean 주장 금지).
+
+    analysis_incomplete (codex verdict-C QA #2, CRITICAL fail-closed): stage 시퀀서가 예기치 못한 예외로
+    중단됨(stage_error.json). G1(scope 존재) 이후라도 후속 단계가 크래시했으면 결과 전체를 신뢰할 수 없다 →
+    **최상위 precedence(G1 다음)로 ANALYSIS_ERROR** 강제. Track B inventory/finding 이 있어도 크래시가
+    우선(빈/부분 결과를 FINDINGS_PRESENT/NO_VULN 으로 오독 금지). track_a_required 와 무관.
     """
     by = _gate_map(gate_results)  # 중복 gate 거부
     g1, g2 = by.get(GateId.G1), by.get(GateId.G2)
@@ -1112,6 +1136,10 @@ def resolve_run_status(
     # diff scope 는 절대 skip 불가이므로 PASS 만 통과 (codex p0code4).
     if g1 is None or g1.status != GateStatus.PASS:
         return RunStatus.DIFF_SCOPE_MISSING, Reliability.UNRELIABLE
+
+    # 파이프라인 크래시(stage_error) → scope 는 있어도 결과 신뢰 불가 → ANALYSIS_ERROR(G1 다음 최상위).
+    if analysis_incomplete:
+        return RunStatus.ANALYSIS_ERROR, Reliability.UNRELIABLE
 
     # G2 필수 — 없으면 검증 미실행으로 간주
     if g2 is None:

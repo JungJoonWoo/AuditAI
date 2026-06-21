@@ -1,0 +1,69 @@
+class S3Artifact(StageArtifact):
+    """S3 판정. codex pipeline PLAN: JudgeRun raw dump 금지 → 로드가능 필드만 + counts 재계산 대조."""
+
+    stage: Literal["S3"] = "S3"
+    outcomes: list[JudgeOutcome] = Field(default_factory=list)
+    eligible_candidate_ids: list[str] = Field(default_factory=list)
+    s3_completed: bool = True
+    report_counts: dict[str, int]  # codex artifacts: 필수 — load 시 재계산값과 항상 대조(누락 우회 차단)
+
+    @property
+    def judged_count(self) -> int:
+        return sum(1 for o in self.outcomes if o.state == JudgeRunState.JUDGED)
+
+    @property
+    def judgement_skipped_count(self) -> int:
+        return sum(1 for o in self.outcomes if o.state != JudgeRunState.JUDGED)
+
+    def recomputed_counts(self) -> dict[str, int]:
+        return {
+            "llm_eligible_count": len(self.eligible_candidate_ids),
+            "judged_count": self.judged_count,
+            "judgement_skipped_count": self.judgement_skipped_count,
+        }
+
+    @property
+    def fully_complete(self) -> bool:
+        return self.s3_completed
+
+    @classmethod
+    def build(cls, *, status: StageStatus, outcomes: list[JudgeOutcome],
+              eligible_candidate_ids: list[str], **kw) -> S3Artifact:
+        """producer 용 — report_counts 와 s3_completed 를 outcomes·status 에서 산출(validator 일관성 보증).
+        codex artifacts2: s3_completed = 'all judged'(skip/failed 있으면 False). codex pipeline-qa(Critical):
+        status 가 OK 가 아니면(상류 partial 전파) s3_completed=False — PARTIAL+s3_completed=True validator
+        충돌(crash)을 산출 단계에서 차단. (status 는 명시 인자 — codex pipeline-qa2 Low.)"""
+        judged = sum(1 for o in outcomes if o.state == JudgeRunState.JUDGED)
+        skipped = len(outcomes) - judged
+        counts = {"llm_eligible_count": len(eligible_candidate_ids), "judged_count": judged,
+                  "judgement_skipped_count": skipped}
+        return cls(status=status, outcomes=outcomes, eligible_candidate_ids=eligible_candidate_ids,
+                   s3_completed=(skipped == 0 and status == StageStatus.OK),
+                   report_counts=counts, **kw)
+
+    @model_validator(mode="after")
+    def _counts_and_ids(self) -> S3Artifact:
+        out_ids = [o.candidate_id for o in self.outcomes]
+        if len(set(out_ids)) != len(out_ids):
+            raise ValueError("duplicate candidate_id in S3Artifact.outcomes")
+        if len(set(self.eligible_candidate_ids)) != len(self.eligible_candidate_ids):
+            raise ValueError("duplicate eligible_candidate_id")
+        if set(out_ids) != set(self.eligible_candidate_ids):
+            raise ValueError("outcomes ids must match eligible_candidate_ids")
+        # report_counts(필수)는 항상 재계산값과 일치해야 한다(저장 후 변조/불일치 → fail-closed).
+        if self.report_counts != self.recomputed_counts():
+            raise ValueError(
+                f"S3Artifact.report_counts {self.report_counts} != recomputed "
+                f"{self.recomputed_counts()} (tampered/inconsistent artifact)"
+            )
+        if self.status == StageStatus.PARTIAL and self.s3_completed:
+            raise ValueError("partial S3Artifact must have s3_completed=False")
+        # codex artifacts2: s3_completed=True 는 'all judged' 의미 — skip/failed 있으면 거짓.
+        if self.s3_completed and self.judgement_skipped_count > 0:
+            raise ValueError("s3_completed=True but outcomes contain skipped/failed (not all judged)")
+        return self
+
+
+class S4Artifact(StageArtifact):
+    stage: Literal["S4"] = "S4"
+    findings: list[FindingReport] = Field(default_factory=list)

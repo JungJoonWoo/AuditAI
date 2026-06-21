@@ -226,9 +226,11 @@ def judge_tasks(
 ) -> JudgeRun:
     """eligible task 들을 판정 → JudgeRun. 모든 task 가 outcome 하나로 회계(누락 불가).
 
-    engine 이 None(미설치/probe 실패/graceful degrade) → 전원 SKIPPED(미전송). s3_completed 는
-    judge 단계가 실제로 수행됐음을 뜻하며(=True), 미판정은 outcomes 의 SKIPPED/FAILED 로 표면화돼
-    `resolve_run_status` 가 SEMANTIC_JUDGE_NOT_RUN 으로 처리한다(NO_VULN 오독 금지).
+    engine 이 None(미설치/probe 실패/graceful degrade) → 전원 SKIPPED(미전송). `s3_reached=True` 는
+    judge 단계가 실제로 수행됐음을 뜻하고(engine None 으로 전원 SKIPPED 라도 단계는 돌았음), 실제
+    '전원 판정 완료'는 `JudgeRun.s3_completed`(=미판정 0, computed)가 derive 한다(codex pipeline-qa2 #6).
+    미판정은 outcomes 의 SKIPPED/FAILED 로 표면화돼 `resolve_run_status` 가 SEMANTIC_JUDGE_NOT_RUN 으로
+    처리한다(NO_VULN 오독 금지).
     """
     if engine is None:
         outcomes = [
@@ -243,5 +245,5 @@ def judge_tasks(
     return JudgeRun(
         outcomes=outcomes,
         eligible_candidate_ids=[t.candidate_id for t in tasks],
-        s3_completed=True,
+        s3_reached=True,
     )

@@ -1,0 +1,75 @@
+class JudgeRun(StrictModel):
+    """S3 실행 전체. eligible 모든 후보가 outcome 하나로 회계됨(누락 불가, codex s3plan2 #5/#2).
+
+    codex s3core: 단일 진실원은 `eligible_candidate_ids`(+`outcomes`). count 는 전부 `@computed_field`
+    로 derive 해 직렬화에도 실리고(model_dump), 배선에서 손으로 맞추는 drift 를 차단한다. outcome 의
+    candidate_id 집합이 eligible 집합과 **정확히 일치**해야 한다(회계 누락/오염 차단).
+
+    codex s3core2: `model_dump()` 는 **진단 artifact 용(output-only)** 이다. computed count 는 입력
+    필드가 아니므로 `model_validate(model_dump())` round-trip 은 지원하지 않는다(StrictModel extra=forbid).
+    배선은 `to_report_counts()` 만 쓴다(round-trip 의존 금지).
+
+    codex pipeline-qa2(#6 의미 통일): S3 의 두 축을 분리한다 —
+    - `s3_reached`: judge **단계가 도달·실행됐는가**(engine None 이라도 전원 SKIPPED 로 회계됐으면 True).
+      과거 `s3_completed` 가 가졌던 '단계 실행' 의미.
+    - `s3_completed`(computed): **eligible 전원이 실제 판정됐는가**(=judgement_skipped_count==0).
+      이게 resolver 의 SEMANTIC_JUDGE_NOT_RUN 판단에 쓰이는 권위 값. 손으로 set 하지 않고 derive 한다
+      (미판정이 있는데 completed=True 로 위장 못 함). 단계 아티팩트 측 권위 플래그는 `S3Artifact.s3_completed`.
+    """
+
+    outcomes: list[JudgeOutcome] = Field(default_factory=list)
+    eligible_candidate_ids: list[str] = Field(default_factory=list)
+    s3_reached: bool = True  # judge 단계 도달·실행 여부(미실행이면 False)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def llm_eligible_count(self) -> int:
+        return len(self.eligible_candidate_ids)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def judged_count(self) -> int:
+        return sum(1 for o in self.outcomes if o.state == JudgeRunState.JUDGED)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def judgement_skipped_count(self) -> int:
+        # SKIPPED + FAILED 둘 다 '미판정'(judged 아님).
+        return sum(1 for o in self.outcomes if o.state != JudgeRunState.JUDGED)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def s3_completed(self) -> bool:
+        """eligible 전원 판정 완료(=미판정 0). 단계 도달(`s3_reached`)과 다른 축 — 도달했어도
+        skip/failed 가 있으면 completed=False(SEMANTIC_JUDGE_NOT_RUN 으로 직결, NO_VULN 오독 금지)."""
+        return self.s3_reached and self.judgement_skipped_count == 0
+
+    @model_validator(mode="after")
+    def _accounting(self) -> JudgeRun:
+        out_ids = [o.candidate_id for o in self.outcomes]
+        if len(set(out_ids)) != len(out_ids):
+            raise ValueError("duplicate candidate_id in JudgeRun.outcomes")
+        if len(set(self.eligible_candidate_ids)) != len(self.eligible_candidate_ids):
+            raise ValueError("duplicate eligible_candidate_id")
+        if set(out_ids) != set(self.eligible_candidate_ids):
+            raise ValueError(
+                "JudgeRun.outcomes ids must exactly match eligible_candidate_ids "
+                f"(outcomes={sorted(out_ids)} eligible={sorted(self.eligible_candidate_ids)})"
+            )
+        return self
+
+    def to_report_counts(self) -> dict:
+        """run.py 배선용 단일 변환점(codex s3core: 카운트 수동 손맞춤 금지)."""
+        return {
+            "llm_eligible_count": self.llm_eligible_count,
+            "judged_count": self.judged_count,
+            "judgement_skipped_count": self.judgement_skipped_count,
+            "s3_completed": self.s3_completed,
+        }
+
+
+class CapabilityProbeResult(StrictModel):
+    """엔진 안전성 probe 결과(codex s3plan2 #1).
+
+    `usable` 의 필수 게이트(codex bj94zik1d-3, fall-open 제거): stdin 전달 가능 + 요구 안전플래그가
+    `--help` 에 실재 + **behavioral_probe 가 실제로 실행되어 통과**해야 한다. `--help` 플래그 실재는
